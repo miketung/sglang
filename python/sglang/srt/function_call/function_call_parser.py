@@ -17,6 +17,7 @@ from sglang.srt.function_call.deepseekv32_detector import DeepSeekV32Detector
 from sglang.srt.function_call.glm4_moe_detector import Glm4MoeDetector
 from sglang.srt.function_call.gpt_oss_detector import GptOssDetector
 from sglang.srt.function_call.kimik2_detector import KimiK2Detector
+from sglang.srt.function_call.llama31_detector import Llama31Detector
 from sglang.srt.function_call.llama32_detector import Llama32Detector
 from sglang.srt.function_call.minimax_m2 import MinimaxM2Detector
 from sglang.srt.function_call.mistral_detector import MistralDetector
@@ -47,6 +48,7 @@ class FunctionCallParser:
         "gpt-oss": GptOssDetector,
         "kimi_k2": KimiK2Detector,
         "llama3": Llama32Detector,
+        "llama31": Llama31Detector,
         "mistral": MistralDetector,
         "pythonic": PythonicDetector,
         "qwen": Qwen25Detector,
