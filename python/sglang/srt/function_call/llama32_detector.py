@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from typing import List
 
 from sglang.srt.entrypoints.openai.protocol import Tool
@@ -14,64 +13,76 @@ from sglang.srt.function_call.core_types import (
 logger = logging.getLogger(__name__)
 
 
-class Llama31Detector(BaseFormatDetector):
+class Llama32Detector(BaseFormatDetector):
     """
-    Detector for Llama 3.1 models with function call format.
+    Detector for Llama 3.2 models with json tool call format.
 
     Format Structure:
     ```
-    <function=function_name>{"arg1": "value1"}</function>
+    <python_tag>{"name":"xxx", "arguments":{...}}
     ```
-
-    Multiple function calls are separated by newlines.
     """
 
     def __init__(self):
         super().__init__()
-        self.function_regex = re.compile(
-            r"<function=([^>]+)>(.*?)</function>", re.DOTALL
-        )
-        self.bot_token = "<function="
+        self.bot_token = "<|python_tag|>"
+        # NOTE: technically Llama3.2 doesn't support well with parallel tool calls
+        # They need specific prompt engineering to support parallel tool calls
+        # Here we use ';' as the separator, which might have compatibility issues
+        # if users define to use a different separator in their prompt
+        self.tool_call_separator = ";"
 
     def has_tool_call(self, text: str) -> bool:
-        """Check if the text contains a Llama 3.1 format tool call."""
-        return "<function=" in text
+        """Check if the text contains a Llama 3.2 format tool call."""
+        # depending on the prompt format the Llama model may or may not
+        # prefix the output with the <|python_tag|> token
+        return "<|python_tag|>" in text or text.startswith("{")
 
     def detect_and_parse(self, text: str, tools: List[Tool]) -> StreamingParseResult:
-        """Parse function calls from text."""
-        if not self.has_tool_call(text):
+        """Parse function calls from text, handling multiple JSON objects."""
+        if "<|python_tag|>" not in text and not text.startswith("{"):
             return StreamingParseResult(normal_text=text, calls=[])
 
+        if "<|python_tag|>" in text:
+            normal_text, action_text = text.split("<|python_tag|>", maxsplit=1)
+        else:
+            normal_text, action_text = "", text
+
+        decoder = json.JSONDecoder()
+        idx = 0
+        safe_idx = idx  # the index of the last valid JSON object
         all_actions = []
-        normal_parts = []
-        last_end = 0
-
-        for match in self.function_regex.finditer(text):
-            # Capture text before this match as normal text
-            normal_parts.append(text[last_end : match.start()])
-            last_end = match.end()
-
-            func_name = match.group(1).strip()
-            args_str = match.group(2).strip()
-
+        action_text_len = len(action_text)
+        while idx < action_text_len:
             try:
-                args = json.loads(args_str) if args_str else {}
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse arguments for {func_name}: {args_str}")
-                args = {}
+                obj, end = decoder.raw_decode(action_text[idx:])
+                all_actions.append(obj)
+                idx += end + len(self.tool_call_separator)
+                safe_idx = idx
+            except json.JSONDecodeError as e:
+                # Find where next `{"name"` appears and try again
+                logger.warning(
+                    f"Failed to parse JSON part: {action_text[idx:]}, JSON parse error: {str(e)}"
+                )
+                next_obj_start = action_text.find('{"name":', idx + 1)
+                if next_obj_start == -1:
+                    break
+                idx = next_obj_start
+                continue
 
-            all_actions.append({"name": func_name, "arguments": args})
-
-        # Capture any remaining text after the last match
-        normal_parts.append(text[last_end:])
-        normal_text = "".join(normal_parts).strip()
-
+        # Only process if we found valid JSON objects
         calls = self.parse_base_json(all_actions, tools) if all_actions else []
-        return StreamingParseResult(normal_text=normal_text, calls=calls)
+        # Use safe_idx to avoid idx containing the last part of an invalid JSON object
+        trailing_text = (
+            action_text[safe_idx:].strip() if safe_idx < action_text_len else ""
+        )
+        return StreamingParseResult(
+            normal_text=normal_text + trailing_text, calls=calls
+        )
 
     def structure_info(self) -> _GetInfoFunc:
         return lambda name: StructureInfo(
-            begin=f"<function={name}>",
-            end="</function>",
-            trigger="<function=",
+            begin='<|python_tag|>{"name":"' + name + '", "arguments":',
+            end="}",
+            trigger="<|python_tag|>",
         )
